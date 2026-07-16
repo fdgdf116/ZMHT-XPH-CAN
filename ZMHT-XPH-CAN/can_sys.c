@@ -28,8 +28,7 @@ typedef struct {
 } pps_channel_buffer_t;
 
 static pps_channel_buffer_t pps_channel_buffers[AXI_CAN_DRV_MAX];
-static volatile uint32_t pps_pending_count;
-static uint32_t pps_processed_count;
+static volatile uint32_t pps_pending_mask;
 static uint32_t pps_enable_mask;
 
 #define PPS_GPIO_CHANNEL GPIO_CHANNEL_1
@@ -208,8 +207,13 @@ static void pps_gpio_interrupt_handler(void* callback_ref)
 	u32 interrupt_status = XGpio_InterruptGetStatus(&pps_gpio->gpio);
 
 	if ((interrupt_status & XGPIO_IR_CH1_MASK) != 0U) {
-		pps_pending_count++;
-		xil_printf("PPS GPIO%d interrupt received\r\n", pps_gpio->pps_id);
+		uint8_t channel_id = pps_gpio->pps_id - 2U;
+
+		if (channel_id < AXI_CAN_DRV_MAX) {
+			pps_pending_mask |= (1U << channel_id);
+			xil_printf("PPS GPIO%d interrupt received, CAN%d pending\r\n",
+				pps_gpio->pps_id, channel_id);
+		}
 	}
 
 	XGpio_InterruptClear(&pps_gpio->gpio, interrupt_status);
@@ -427,60 +431,69 @@ static void parse_host_command(void* frame_data, uint32_t data_len)
 	}
 }
 
-static void pps_send_cached_frames(void)
+static void pps_send_cached_channel_frames(uint8_t channel_id)
 {
-	uint8_t channel_id;
+	pps_channel_buffer_t* buffer;
+	uint32_t frame_index;
 
-	for (channel_id = 0; channel_id < AXI_CAN_DRV_MAX; channel_id++) {
-		pps_channel_buffer_t* buffer = &pps_channel_buffers[channel_id];
-		uint32_t frame_index;
+	if (channel_id >= AXI_CAN_DRV_MAX) {
+		return;
+	}
 
-		if (((pps_enable_mask & (1U << channel_id)) == 0U) ||
-			(buffer->valid == 0U) || (can_channel_ready[channel_id] == 0U)) {
+	buffer = &pps_channel_buffers[channel_id];
+	if (((pps_enable_mask & (1U << channel_id)) == 0U) ||
+		(buffer->valid == 0U) || (can_channel_ready[channel_id] == 0U)) {
+		return;
+	}
+
+	for (frame_index = 0; frame_index < buffer->frame_count; frame_index++) {
+		const can_request_frame_t* request = &buffer->frames[frame_index];
+		u32 tx_frame[4];
+		uint32_t wait_count = 0U;
+		int status;
+
+		tx_frame[0] = request->idr;
+		tx_frame[1] = XCan_CreateDlcValue(request->drcr);
+		tx_frame[2] = request->dw1r;
+		tx_frame[3] = request->dw2r;
+
+		while (XCan_IsTxFifoFull(&can_drv[channel_id].can) == TRUE) {
+			if (++wait_count >= PPS_CAN_TX_WAIT_MAX) {
+				CAN_DBG(CAN_DBG_ERROR,
+					"PPS CAN TX FIFO timeout: ch=%d index=%d\r\n",
+					channel_id, frame_index);
+				break;
+			}
+		}
+
+		if (wait_count >= PPS_CAN_TX_WAIT_MAX) {
 			continue;
 		}
 
-		for (frame_index = 0; frame_index < buffer->frame_count; frame_index++) {
-			const can_request_frame_t* request = &buffer->frames[frame_index];
-			u32 tx_frame[4];
-			uint32_t wait_count = 0U;
-			int status;
-
-			tx_frame[0] = request->idr;
-			tx_frame[1] = XCan_CreateDlcValue(request->drcr);
-			tx_frame[2] = request->dw1r;
-			tx_frame[3] = request->dw2r;
-
-			while (XCan_IsTxFifoFull(&can_drv[channel_id].can) == TRUE) {
-				if (++wait_count >= PPS_CAN_TX_WAIT_MAX) {
-					CAN_DBG(CAN_DBG_ERROR,
-						"PPS CAN TX FIFO timeout: ch=%d index=%d\r\n",
-						channel_id, frame_index);
-					break;
-				}
-			}
-
-			if (wait_count >= PPS_CAN_TX_WAIT_MAX) {
-				continue;
-			}
-
-			status = XCan_Send(&can_drv[channel_id].can, tx_frame);
-			if (status != XST_SUCCESS) {
-				CAN_DBG(CAN_DBG_ERROR, "PPS CAN send failed: ch=%d index=%d\r\n",
-					channel_id, frame_index);
-			}
+		status = XCan_Send(&can_drv[channel_id].can, tx_frame);
+		if (status != XST_SUCCESS) {
+			CAN_DBG(CAN_DBG_ERROR, "PPS CAN send failed: ch=%d index=%d\r\n",
+				channel_id, frame_index);
 		}
 	}
 }
 
 static void pps_process_pending(void)
 {
-	if (pps_processed_count == pps_pending_count) {
+	uint32_t pending_mask = pps_pending_mask;
+	uint8_t channel_id;
+
+	if (pending_mask == 0U) {
 		return;
 	}
 
-	pps_processed_count++;
-	pps_send_cached_frames();
+	pps_pending_mask &= ~pending_mask;
+
+	for (channel_id = 0; channel_id < AXI_CAN_DRV_MAX; channel_id++) {
+		if ((pending_mask & (1U << channel_id)) != 0U) {
+			pps_send_cached_channel_frames(channel_id);
+		}
+	}
 }
 void send_can_tx_status(uint8_t ch_id, uint32_t data_array[], uint16_t status, uint8_t type)
 {
