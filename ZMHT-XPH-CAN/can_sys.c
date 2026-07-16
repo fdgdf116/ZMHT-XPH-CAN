@@ -211,8 +211,8 @@ static void pps_gpio_interrupt_handler(void* callback_ref)
 
 		if (channel_id < AXI_CAN_DRV_MAX) {
 			pps_pending_mask |= (1U << channel_id);
-			xil_printf("PPS GPIO%d interrupt received, CAN%d pending\r\n",
-				pps_gpio->pps_id, channel_id);
+			// xil_printf("PPS GPIO%d interrupt received, CAN%d pending\r\n",
+			// 	pps_gpio->pps_id, channel_id);
 		}
 	}
 
