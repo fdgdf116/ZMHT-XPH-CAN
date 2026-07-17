@@ -29,6 +29,7 @@ typedef struct {
 
 static pps_channel_buffer_t pps_channel_buffers[AXI_CAN_DRV_MAX];
 static volatile uint32_t pps_pending_mask;
+static volatile uint32_t pps_latched_mask;
 static uint32_t pps_enable_mask;
 
 #define PPS_GPIO_CHANNEL GPIO_CHANNEL_1
@@ -210,13 +211,43 @@ static void pps_gpio_interrupt_handler(void* callback_ref)
 		uint8_t channel_id = pps_gpio->pps_id - 2U;
 
 		if (channel_id < AXI_CAN_DRV_MAX) {
-			pps_pending_mask |= (1U << channel_id);
+			uint32_t channel_mask = 1U << channel_id;
+
+			if ((pps_latched_mask & channel_mask) == 0U) {
+				pps_latched_mask |= channel_mask;
+				pps_pending_mask |= channel_mask;
+			}
 			// xil_printf("PPS GPIO%d interrupt received, CAN%d pending\r\n",
 			// 	pps_gpio->pps_id, channel_id);
 		}
 	}
 
 	XGpio_InterruptClear(&pps_gpio->gpio, interrupt_status);
+}
+
+static void pps_rearm_deasserted_channels(void)
+{
+	uint32_t i;
+
+	for (i = 0; i < PPS_GPIO_COUNT; i++) {
+		pps_gpio_t* pps_gpio = &pps_gpios[i];
+		uint8_t channel_id = pps_gpio->pps_id - 2U;
+		uint32_t channel_mask;
+
+		if (channel_id >= AXI_CAN_DRV_MAX) {
+			continue;
+		}
+
+		channel_mask = 1U << channel_id;
+		if ((pps_latched_mask & channel_mask) == 0U) {
+			continue;
+		}
+
+		if (XGpio_DiscreteRead(&pps_gpio->gpio, PPS_GPIO_CHANNEL) == 0U) {
+			pps_latched_mask &= ~channel_mask;
+			XGpio_InterruptClear(&pps_gpio->gpio, XGPIO_IR_CH1_MASK);
+		}
+	}
 }
 
 static int pps_gpio_drv_init(void)
@@ -466,23 +497,25 @@ static void pps_send_cached_channel_frames(uint8_t channel_id)
 			}
 		}
 
-		if (wait_count >= PPS_CAN_TX_WAIT_MAX) {
-			continue;
-		}
+			if (wait_count >= PPS_CAN_TX_WAIT_MAX) {
+				continue;
+			}
 
-		status = XCan_Send(&can_drv[channel_id].can, tx_frame);
-		if (status != XST_SUCCESS) {
-			CAN_DBG(CAN_DBG_ERROR, "PPS CAN send failed: ch=%d index=%d\r\n",
-				channel_id, frame_index);
+			status = XCan_Send(&can_drv[channel_id].can, tx_frame);
+			if (status != XST_SUCCESS) {
+				CAN_DBG(CAN_DBG_ERROR, "PPS CAN send failed: ch=%d index=%d\r\n",
+					channel_id, frame_index);
 		}
 	}
 }
 
 static void pps_process_pending(void)
 {
-	uint32_t pending_mask = pps_pending_mask;
+	uint32_t pending_mask;
 	uint8_t channel_id;
 
+	pps_rearm_deasserted_channels();
+	pending_mask = pps_pending_mask;
 	if (pending_mask == 0U) {
 		return;
 	}
