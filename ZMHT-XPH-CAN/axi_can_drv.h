@@ -22,7 +22,7 @@
 #define TEST_BTR_FIRST_TIMESEGMENT 9
 
 
-/*CANÉè±¸¹ÜÀí*/
+/*CANè®¾å¤‡ç®¡ç†*/
 typedef struct {
 	u32 esr_acker_count;//XCAN_ESR_ACKER_MASK
 	u32 esr_berr_count;//XCAN_ESR_BERR_MASK
@@ -44,19 +44,19 @@ typedef struct {
 
 
 typedef struct {
-	XCan can; //CANÉè±¸
+	XCan can; //CANè®¾å¤‡
 	u8 can_chn_id;
-	u16 can_id; //canÉè±¸³õÊ¼»¯id
-	u8 intc_id; //canÖĞ¶Ï
+	u16 can_id; //canè®¾å¤‡åˆå§‹åŒ–id
+	u8 intc_id; //canä¸­æ–­
 
-	u8 init_flag; //³õÊ¼»¯±êÖ¾
+	u8 init_flag; //åˆå§‹åŒ–æ ‡å¿—
 
-	u32 baud; //²¨ÌØÂÊ
+	u32 baud; //æ³¢ç‰¹ç‡
 
-	drv_can_event_t can_event; //eventĞÅÏ¢
-	drv_can_error_t can_error; //errorĞÅÏ¢
+	drv_can_event_t can_event; //eventä¿¡æ¯
+	drv_can_error_t can_error; //errorä¿¡æ¯
 
-	ring_buffer_t* rb; //½ÓÊÕÍâ²¿CANĞÅÏ¢µÄringbuffer
+	ring_buffer_t* rb; //æ¥æ”¶å¤–éƒ¨CANä¿¡æ¯çš„ringbuffer
 	u8 rb_count;
 	u8 alonge_start;
 	u8 alonge_inter;
@@ -64,13 +64,17 @@ typedef struct {
 	u32 along_more_int_couter;
 
 	u32 rxframe_phy_addr;
-	u32 status_phy_addr; //base_address; //arm--->ÉÏÎ»»úµÄ ddrµÄ»ùµØÖ·
+	u32 status_phy_addr; //base_address; //arm--->ä¸Šä½æœºçš„ ddrçš„åŸºåœ°å€
 	u32 response_phy_addr;
 
 	u32 status_frame_offset;
 	u32 response_frame_offset;
 
-	UINTPTR axis_fifo_base_address; //can fifo µÄ»ùµØÖ·
+	uint32_t normal_packet_interval_us;
+	uint64_t normal_last_tx_us;
+	uint8_t normal_last_tx_valid;
+
+	UINTPTR axis_fifo_base_address; //can fifo çš„åŸºåœ°å€
 	u16 fifo_frame_count;
 }can_drv_t;
 

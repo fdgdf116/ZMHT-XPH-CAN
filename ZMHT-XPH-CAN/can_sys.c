@@ -32,6 +32,10 @@ static volatile uint32_t pps_pending_mask;
 static volatile uint32_t pps_latched_mask;
 static uint32_t pps_enable_mask;
 
+static uint64_t gpio_time_us_read(void);
+static bool gpio_time_reached(uint64_t now, uint64_t deadline);
+static void normal_send_wait_interval(const can_drv_t* pcan_drv);
+
 #define PPS_GPIO_CHANNEL GPIO_CHANNEL_1
 #define PPS_CAN_TX_WAIT_MAX 1000000U
 #define PPS_GPIO_COUNT 4U
@@ -200,6 +204,46 @@ static int axi_gpio_drv_init(void)
 	xil_printf("Successfully GPIO init\r\n");
 	XGpio_DiscreteWrite(&Gpio[0], GPIO_CHANNEL_1, 0x01);
 	return XST_SUCCESS;
+}
+
+static uint64_t gpio_time_us_read(void)
+{
+	uint32_t high_first;
+	uint32_t high_second;
+	uint32_t low;
+
+	/*
+	 * Read the high word around the low word so a 32-bit wrap cannot
+	 * produce a torn 64-bit timestamp.
+	 */
+	do {
+		high_first = XGpio_DiscreteRead(&Gpio[1], GPIO_CHANNEL_2);
+		low = XGpio_DiscreteRead(&Gpio[1], GPIO_CHANNEL_1);
+		high_second = XGpio_DiscreteRead(&Gpio[1], GPIO_CHANNEL_2);
+	} while (high_first != high_second);
+
+	return ((uint64_t)high_second << 32) | (uint64_t)low;
+}
+
+static bool gpio_time_reached(uint64_t now, uint64_t deadline)
+{
+	return ((int64_t)(now - deadline) >= 0);
+}
+
+static void normal_send_wait_interval(const can_drv_t* pcan_drv)
+{
+	uint64_t deadline;
+
+	if ((pcan_drv->normal_packet_interval_us == 0U) ||
+		(pcan_drv->normal_last_tx_valid == 0U)) {
+		return;
+	}
+
+	deadline = pcan_drv->normal_last_tx_us +
+		(uint64_t)pcan_drv->normal_packet_interval_us;
+	while (!gpio_time_reached(gpio_time_us_read(), deadline)) {
+		/* Wait for the next normal-mode transmit slot. */
+	}
 }
 
 static void pps_gpio_interrupt_handler(void* callback_ref)
@@ -623,6 +667,9 @@ static void parse_and_init_can(can_config_frame_t* frame)
 		return;
 	}
 
+	pcan_drv_t->normal_packet_interval_us = frame->packet_interval_us;
+	pcan_drv_t->normal_last_tx_valid = 0U;
+
 	axi_can_config(pcan_drv_t, frame->baud_rate);
 
 	switch (frame->mode) {
@@ -666,6 +713,7 @@ static void can_send(can_drv_t* pcan_drv, can_request_frame_t* request_frame, ca
 			uint32_t low_bits, high_bits;
 			uint32_t wait_ms = 0;
 			uint8_t tx_timeout = 0;
+			uint64_t send_start_us;
 
 			Can_TxFrame[0] = request_frame[i].idr;
 			Can_TxFrame[1] = XCan_CreateDlcValue(request_frame[i].drcr);
@@ -673,6 +721,7 @@ static void can_send(can_drv_t* pcan_drv, can_request_frame_t* request_frame, ca
 			Can_TxFrame[3] = request_frame[i].dw2r;
 				
 			//CAN_DBG(CAN_DBG_DEBUG,"request_frame[i].idr:0X%08X \r\n",request_frame[i].idr);
+			normal_send_wait_interval(pcan_drv);
 			ret = XST_SUCCESS;
 			while (XCan_IsTxFifoFull(&pcan_drv->can) == TRUE)
 			{
@@ -690,6 +739,7 @@ static void can_send(can_drv_t* pcan_drv, can_request_frame_t* request_frame, ca
 
 			if (tx_timeout == 0)
 			{
+				send_start_us = gpio_time_us_read();
 				ret = XCan_Send(&pcan_drv->can, Can_TxFrame);
 			}
 
@@ -710,6 +760,8 @@ static void can_send(can_drv_t* pcan_drv, can_request_frame_t* request_frame, ca
 			else {
 				//CAN_DBG(CAN_DBG_DEBUG,"CAN SEND SUCCESSFUL \r\n");
 				status_frame[i].xor_states = 0;
+				pcan_drv->normal_last_tx_us = send_start_us;
+				pcan_drv->normal_last_tx_valid = 1U;
 			}
 		}
 		else {

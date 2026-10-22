@@ -1,6 +1,7 @@
 #ifndef _CAN_COMMON_H_
 #define _CAN_COMMON_H_
 
+#include <stddef.h>
 #include "xparameters.h"
 
 /****************axis fifo******************/
@@ -177,10 +178,16 @@ typedef struct {
 	uint8_t mode;
 	uint8_t auto_send;
 	uint16_t ier;
-	uint8_t reserved[12];
+	uint32_t packet_interval_us;
+	uint8_t reserved[8];
 	uint64_t timestamp;
 	uint32_t xor_checksum;
 } can_config_frame_t;
+
+typedef char can_config_interval_offset_must_be_24[
+	(offsetof(can_config_frame_t, packet_interval_us) == 24) ? 1 : -1];
+typedef char can_config_frame_size_must_be_48[
+	(sizeof(can_config_frame_t) == CAN_CONFIG_FRAME_SIZE) ? 1 : -1];
 
 typedef struct __attribute__((packed)) {
 	uint32_t head;
