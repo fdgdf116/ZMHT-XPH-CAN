@@ -31,6 +31,8 @@ static pps_channel_buffer_t pps_channel_buffers[AXI_CAN_DRV_MAX];
 static volatile uint32_t pps_pending_mask;
 static volatile uint32_t pps_latched_mask;
 static uint32_t pps_enable_mask;
+static volatile uint32_t pps_delay_ms;
+static volatile uint64_t pps_send_deadline_us[AXI_CAN_DRV_MAX];
 
 static uint64_t gpio_time_us_read(void);
 static bool gpio_time_reached(uint64_t now, uint64_t deadline);
@@ -258,6 +260,15 @@ static void pps_gpio_interrupt_handler(void* callback_ref)
 			uint32_t channel_mask = 1U << channel_id;
 
 			if ((pps_latched_mask & channel_mask) == 0U) {
+				if (pps_delay_ms == 0U) {
+					pps_send_deadline_us[channel_id] = 0U;
+				}
+				else {
+					pps_send_deadline_us[channel_id] =
+						gpio_time_us_read() +
+						(uint64_t)pps_delay_ms * 1000U;
+				}
+
 				pps_latched_mask |= channel_mask;
 				pps_pending_mask |= channel_mask;
 			}
@@ -564,12 +575,23 @@ static void pps_process_pending(void)
 		return;
 	}
 
-	pps_pending_mask &= ~pending_mask;
-
 	for (channel_id = 0; channel_id < AXI_CAN_DRV_MAX; channel_id++) {
-		if ((pending_mask & (1U << channel_id)) != 0U) {
-			pps_send_cached_channel_frames(channel_id);
+		uint32_t channel_mask = 1U << channel_id;
+		uint64_t deadline_us;
+
+		if ((pending_mask & channel_mask) == 0U) {
+			continue;
 		}
+
+		deadline_us = pps_send_deadline_us[channel_id];
+		if ((deadline_us != 0U) &&
+			!gpio_time_reached(gpio_time_us_read(),
+				deadline_us)) {
+			continue;
+		}
+
+		pps_pending_mask &= ~channel_mask;
+		pps_send_cached_channel_frames(channel_id);
 	}
 }
 void send_can_tx_status(uint8_t ch_id, uint32_t data_array[], uint16_t status, uint8_t type)
@@ -669,6 +691,7 @@ static void parse_and_init_can(can_config_frame_t* frame)
 
 	pcan_drv_t->normal_packet_interval_us = frame->packet_interval_us;
 	pcan_drv_t->normal_last_tx_valid = 0U;
+	pps_delay_ms = frame->pps_delay_ms;
 
 	axi_can_config(pcan_drv_t, frame->baud_rate);
 

@@ -179,13 +179,16 @@ typedef struct {
 	uint8_t auto_send;
 	uint16_t ier;
 	uint32_t packet_interval_us;
-	uint8_t reserved[8];
+	uint32_t pps_delay_ms;
+	uint8_t reserved[4];
 	uint64_t timestamp;
 	uint32_t xor_checksum;
 } can_config_frame_t;
 
 typedef char can_config_interval_offset_must_be_24[
 	(offsetof(can_config_frame_t, packet_interval_us) == 24) ? 1 : -1];
+typedef char can_config_pps_delay_offset_must_be_28[
+	(offsetof(can_config_frame_t, pps_delay_ms) == 28) ? 1 : -1];
 typedef char can_config_frame_size_must_be_48[
 	(sizeof(can_config_frame_t) == CAN_CONFIG_FRAME_SIZE) ? 1 : -1];
 
